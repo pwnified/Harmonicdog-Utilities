@@ -196,11 +196,7 @@ def main(argv):
 	if not os.path.isfile(projectFile):
 		raise ValueError('Missing project.plist file: %s' % songPath)
 
-	try:
-		tracks = NSKeyedUnarchiver.unarchiveObjectWithFile_(tracksFile)
-	except:
-		raise ValueError('Some problem with %s' % tracksFile)
-
+	tracks = NSKeyedUnarchiver.unarchiveObjectWithFile_(tracksFile)
 
 	print '\nPROJECT:'
 	project = NSDictionary.dictionaryWithContentsOfFile_(projectFile)
