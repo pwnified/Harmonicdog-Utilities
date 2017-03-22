@@ -170,43 +170,41 @@ class BinHolder:
 		bitrates = { 0: 0, 1: 11025, 2: 12000, 3: 22050, 4: 24000, 5: 44100, 6: 48000, 7: 88200, 8: 96000 }
 		return bitrates[bitrateFormat]
 
-def main(argv):
-	"""
-	Print some data about the MultiTrack DAW song project and exit.
-	Call this script with a single argument, which is the path to the song directory.
-	Which should be a relative path from the current directory.
-		e.g
-		ReadProject.py "../../My Songs/Song 1/"
-	"""
-	
-	if len(argv) <= 1:
-		raise ValueError('Usage: ReadProject.py "../../My Songs/Song 1/"')
-	
-	songPath = os.path.normpath(os.path.join(os.getcwd(), argv[1]))
+
+def Read(songPath):
 	if not os.path.isdir(songPath):
 		raise ValueError('Bad input song folder: %s' % songPath)
-
 	tracksFile = os.path.join(songPath, 'Tracks2.plist')
 	if not os.path.isfile(tracksFile):
 		tracksFile = os.path.join(songPath, 'Tracks.plist')
 	if not os.path.isfile(tracksFile):
 		raise ValueError('Not a song project: %s' % songPath)
-
 	projectFile = os.path.join(songPath, 'project.plist')
 	if not os.path.isfile(projectFile):
 		raise ValueError('Missing project.plist file: %s' % songPath)
-
 	tracks = NSKeyedUnarchiver.unarchiveObjectWithFile_(tracksFile)
-
-	print '\nPROJECT:'
 	project = NSDictionary.dictionaryWithContentsOfFile_(projectFile)
+	return tracks, project
+
+
+def main(argv):
+	"""Print some data about the MultiTrack DAW song project and exit.
+		Call this script with a single argument, which is the path to the song directory.
+		Which should be a relative path from the current directory.
+		e.g
+		ReadProject.py "../../My Songs/Song 1/"
+	"""
+	if len(argv) <= 1:
+		raise ValueError('Usage: ReadProject.py "../../Song 1/"')
+
+	songPath = os.path.normpath(os.path.join(os.getcwd(), argv[1]))
+	tracks, project = Read(songPath)
+	print '\nPROJECT:'
 	print '   projectVersion: %d' % project['projectVersion']
 	print '   inputVolumeDB: %f' % project['inputVolumeDB']
 	print '   outputVolumeDB: %f' % project['outputVolumeDB']
 	print '   metronomeVolume: %f' % project['metronomeVolume']
 	print '   tempo: %f' % project['tempo']
-
-
 
 	print '\nTRACKS: %d' % len(tracks)
 	for track in tracks:
