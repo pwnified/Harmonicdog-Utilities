@@ -1,14 +1,21 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
-#  ReadProject.py
+#  mtdawRead.py
 #  MultiTrack
 #
-#  Created by Hamilton Feltman on 12/07/11.
-#  Copyright 2011 Harmonicdog. All rights reserved.
+#  Copyright 2019 Harmonicdog. All rights reserved.
 #
 
 import sys, os, binascii, struct, string, fileinput
+
+#pip install pyobjc
 from Foundation import *
+
+#pip install crccheck
+from crccheck.crc import Crc64, Crc64We
+kDoHashChecks = False # slow in python
+
+
 
 def LinearInterp(p0, p1, t):
 	"""Interpolates linearly between p0 and p1. `t` is the scalar in the range [0:1]"""
@@ -47,23 +54,15 @@ class VirtualRegion(NSObject):
 	def initWithCoder_(self, coder):
 		self.binID = coder.decodeIntForKey_('binID')
 		self.name = coder.decodeObjectForKey_('name')
-		self.realStart = coder.decodeIntForKey_('realStart')
-		self.realLength = coder.decodeIntForKey_('realLength')
-		self.binStart = coder.decodeIntForKey_('binStart')
+		self.realStart = coder.decodeIntForKey_('realStart') # absolute sample along timeline of where this region starts
+		self.realLength = coder.decodeIntForKey_('realLength') # length of region
+		self.binStart = coder.decodeIntForKey_('binStart') # offset in samples into Bin
 		if coder.containsValueForKey_('fadeA'):
-			self.fadeA = coder.decodeIntForKey_('fadeA')
-			self.fadeB = coder.decodeIntForKey_('fadeB')
-			self.fadeA0 = coder.decodeFloatForKey_('fadeA0')
-			self.fadeA1 = coder.decodeFloatForKey_('fadeA1')
-			self.fadeB0 = coder.decodeFloatForKey_('fadeB0')
-			self.fadeB1 = coder.decodeFloatForKey_('fadeB1')
+			self.fadeA = coder.decodeIntForKey_('fadeA') # offset relative to start, ie. realStart + fadeA
+			self.fadeB = coder.decodeIntForKey_('fadeB') # offset relative to end, ie. (realStart+realLength) - fadeB
 		else:
 			self.fadeA = 128
 			self.fadeB = 128
-			self.fadeA0 = 1.0/3
-			self.fadeA1 = 2.0/3
-			self.fadeB0 = 1.0/3
-			self.fadeB1 = 2.0/3
 		return self
 
 	def encodeWithCoder_(self, coder):
@@ -74,10 +73,6 @@ class VirtualRegion(NSObject):
 		coder.encodeInt_forKey_(self.binStart, 'binStart')
 		coder.encodeInt_forKey_(self.fadeA, 'fadeA')
 		coder.encodeInt_forKey_(self.fadeB, 'fadeB')
-		coder.encodeFloat_forKey_(self.fadeA0, 'fadeA0')
-		coder.encodeFloat_forKey_(self.fadeA1, 'fadeA1')
-		coder.encodeFloat_forKey_(self.fadeB0, 'fadeB0')
-		coder.encodeFloat_forKey_(self.fadeB1, 'fadeB1')
 
 
 
@@ -92,8 +87,7 @@ class VirtualTrack(NSObject):
 	def encodeWithCoder_(self, coder):
 		coder.encodeInt_forKey_(len(self.regions), 'numRegions')
 		[coder.encodeObject_forKey_(self.regions[i], 'region %d' % i) for i in range(len(self.regions))]
-
-
+		
 
 class CacheTrack(NSObject):
 	"""Holds information about a track"""
@@ -107,6 +101,7 @@ class CacheTrack(NSObject):
 		self.muted = coder.decodeBoolForKey_('muted')
 		self.soloed = coder.decodeBoolForKey_('soloed')
 		self.controlValues = coder.decodeObjectForKey_('controlValues')
+		self.trackHue = coder.decodeFloatForKey_('trackHue')
 		return self
 	
 	def encodeWithCoder_(self, coder):
@@ -118,7 +113,7 @@ class CacheTrack(NSObject):
 		coder.encodeBool_forKey(self.muted, 'muted')
 		coder.encodeBool_forKey(self.soloed, 'soloed')
 		coder.encodeObject_forKey_(self.controlValues, 'controlValues')
-
+		coder.encodeFloat_forKey_(self.trackHue, 'trackHue')
 
 class BinHolder:
 	"""Metadata for a wav is encoded into the filename of the wav file. This class
@@ -164,7 +159,7 @@ class BinHolder:
 		self.name = name
 			
 	def Print(self):
-		print '[binID %d] [name: \"%s\"] [channels: %d] [samples: %d] [bps: %d] [rate: %d] [offset: %d] [hash: 0x%016x]' % (self.binID, self.name, self.channels, self.samples, self.bitsPerSample, self.sampleRate, self.offset, self.hash)
+		print ('[binID %d] [name: %s] [channels: %d] [samples: %d] [bps: %d] [rate: %d] [offset: %d] [hash: 0x%016x]' % (self.binID, self.name, self.channels, self.samples, self.bitsPerSample, self.sampleRate, self.offset, self.hash))
 
 	def BitrateFormatToSamplerate(self, bitrateFormat):
 		bitrates = { 0: 0, 1: 11025, 2: 12000, 3: 22050, 4: 24000, 5: 44100, 6: 48000, 7: 88200, 8: 96000 }
@@ -173,7 +168,7 @@ class BinHolder:
 
 def Read(songPath):
 	if not os.path.isdir(songPath):
-		raise ValueError('Bad input song folder: %s' % songPath)
+		raise ValueError('Bad input mtdaw project: %s' % songPath)
 	tracksFile = os.path.join(songPath, 'Tracks2.plist')
 	if not os.path.isfile(tracksFile):
 		tracksFile = os.path.join(songPath, 'Tracks.plist')
@@ -187,44 +182,68 @@ def Read(songPath):
 	return tracks, project
 
 
+def signatureForIndex(x):
+	signatures = { 0:(2,2), 1:(2, 4), 2:(3, 4), 3:(4, 4), 4:(5, 4), 5:(7, 4), 6:(6, 8), 7:(7, 8), 8:(9, 8), 9:(11, 8), 10:(12, 8) }
+	return signatures[x]
+
 def main(argv):
-	"""Print some data about the MultiTrack DAW song project and exit.
-		Call this script with a single argument, which is the path to the song directory.
-		Which should be a relative path from the current directory.
+	"""Print some data about the mtdaw song project and exit.
+		Call this script with a single argument, the path to the mtdaw project.
+		Should be a relative path from the current directory.
 		e.g
-		ReadProject.py "../../My Songs/Song 1/"
+		mtdawRead.py ../Songs/BbMin7.mtdaw
 	"""
 	if len(argv) <= 1:
-		raise ValueError('Usage: ReadProject.py "../../Song 1/"')
+		exit('Usage: %s song.mtdaw' % argv[0])
 
 	songPath = os.path.normpath(os.path.join(os.getcwd(), argv[1]))
 	tracks, project = Read(songPath)
-	print '\nPROJECT:'
-	print '   projectVersion: %d' % project['projectVersion']
-	print '   inputVolumeDB: %f' % project['inputVolumeDB']
-	print '   outputVolumeDB: %f' % project['outputVolumeDB']
-	print '   metronomeVolume: %f' % project['metronomeVolume']
-	print '   tempo: %f' % project['tempo']
+	print ('\nPROJECT:')
+	print ('   projectVersion: %d' % project['projectVersion'])
+	print ('   inputVolumeDB: %.1f' % project['inputVolumeDB'])
+	print ('   outputVolumeDB: %.1f' % project['outputVolumeDB'])
+	print ('   metronomeVolume: %.1f' % project['metronomeVolume'])
+	print ('   tempo: %.1f' % project['tempo'])
+	sigIndex = project.get('timeSignature2', project.get('timeSignature', 3))
+	(numerator, denominator) = signatureForIndex(sigIndex)
+	print ('   timeSignature: %d (%d/%d)' % (sigIndex, numerator, denominator))
 
-	print '\nTRACKS: %d' % len(tracks)
+	print ('\nTRACKS: %d' % len(tracks))
 	for track in tracks:
-		print 'TRACK %d: \"%s\"' % (track.orderNum, track.friendlyName)
-		print '   [numChannels: %d] [muted: %s] [soloed: %s] [volumeDB: %f] [pan: %f] [send: %f]' % (track.numChannels, track.muted, track.soloed, track.controlValues.volumeDB, track.controlValues.pan, track.controlValues.send)
-		print '   REGIONS: %d' % len(track.virtualTrack.regions)
+		print ('TRACK %d: %s' % (track.orderNum, track.friendlyName))
+		print ('   [numChannels: %d] [muted: %s] [soloed: %s] [volumeDB: %.1f] [pan: %f] [send: %.4f] [trackHue: %f]' % (track.numChannels, track.muted, track.soloed, track.controlValues.volumeDB, track.controlValues.pan, track.controlValues.send, track.trackHue))
+		print ('   REGIONS: %d' % len(track.virtualTrack.regions))
 		for region in track.virtualTrack.regions:
-			print '      [name: \"%s\"] [binID: %d] [realStart: %d] [realLength: %d] [binStart: %d]' % (region.name, region.binID, region.realStart, region.realLength, region.binStart)
+			print ('      [name: %s] [binID: %d] [realStart: %d] [realLength: %d] [binStart: %d] [fadeA: %d] [fadeB: %d]' % (region.name, region.binID, region.realStart, region.realLength, region.binStart, region.fadeA, region.fadeB))
+
+	
 
 	binPath = os.path.join(songPath, 'Bins')
 	binNames = os.listdir(binPath)
 
-	print '\nBINS:'
+	print ('\nBINS:')
 	for binName in binNames:
-		if string.lower(binName[-4:]) == '.wav':
+		if str.lower(binName[-4:]) == '.wav':
 			hexstring = binName[:-4]
-			BinHolder(hexstring).Print()
-
-
-
+			holder = BinHolder(hexstring)
+			holder.Print()
+			
+			# Open the bin and read 'samples' of data starting at 'offset', hash it, and compare to the hash stored in the metadata.
+			# Assumes data is contiguous. frameSize is bytes per sample (2 or 3) * number of channels (1 or 2)
+			# Currently disabled because it's slow for large files, and read whole file into memory. So to fix this it should read
+			# a block at a time and use a python extension or hash using numpy?
+			if kDoHashChecks:
+				f = open(os.path.join(binPath, binName), 'rb')
+				if f:
+					frameSize = holder.bitsPerSample // 8 * holder.channels
+					f.seek(holder.offset)
+					data = f.read(holder.samples * frameSize)
+					crc = Crc64We()
+					crc.process(data)
+					hash = crc.final()
+					if hash != holder.hash:
+						print("Failed hash")
+			
 
 if __name__ == '__main__':
 	main(sys.argv)
