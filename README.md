@@ -13,6 +13,8 @@ This script reads a MultiTrack DAW song project and prints some info about the s
 *Dependencies:*
 python3
 
-`pip install pyobjc`
-`pip install crccheck`
+`
+pip install pyobjc
+pip install crccheck
+`
 
