@@ -6,15 +6,14 @@
 #  Copyright 2019 Harmonicdog. All rights reserved.
 #
 
-import sys, os, binascii, struct, string, fileinput
+import sys, os, binascii, struct, string, fileinput, operator
 
 #pip install pyobjc
 from Foundation import *
 
-#pip install crccheck
-from crccheck.crc import Crc64, Crc64We
-kDoHashChecks = False # slow in python
-
+#pip install crcmod
+import crcmod
+crc = crcmod.mkCrcFun(0x142F0E1EBA9EA3693, rev=False, initCrc=0x0, xorOut=0xFFFFFFFFFFFFFFFF)
 
 
 def LinearInterp(p0, p1, t):
@@ -119,7 +118,13 @@ class BinHolder:
 	"""Metadata for a wav is encoded into the filename of the wav file. This class
 	parses the filename (without the .wav extension) and fills out the class
 	"""
-	def __init__(self, hexstring):
+	def __init__(self, fullpath):
+		if str.lower(fullpath[-4:]) == '.wav':
+			self.fullpath = fullpath
+			binName = os.path.basename(fullpath)
+			hexstring = binName[:-4]
+		else:
+			return None
 		binstring = binascii.unhexlify(hexstring)
 		self.version = int(struct.unpack('>B', binstring[0:1])[0])
 		if self.version == 1:
@@ -159,12 +164,30 @@ class BinHolder:
 		self.name = name
 			
 	def Print(self):
-		print ('[binID %d] [name: %s] [channels: %d] [samples: %d] [bps: %d] [rate: %d] [offset: %d] [hash: 0x%016x]' % (self.binID, self.name, self.channels, self.samples, self.bitsPerSample, self.sampleRate, self.offset, self.hash))
+		print ('   [binID %d] [channels: %d] [samples: %d] [bps: %d] [rate: %d] [offset: %d] [hash: 0x%016x] [name: %s]' % (self.binID, self.channels, self.samples, self.bitsPerSample, self.sampleRate, self.offset, self.hash, self.name))
 
 	def BitrateFormatToSamplerate(self, bitrateFormat):
 		bitrates = { 0: 0, 1: 11025, 2: 12000, 3: 22050, 4: 24000, 5: 44100, 6: 48000, 7: 88200, 8: 96000 }
 		return bitrates[bitrateFormat]
 
+	def CalculateHash(self):
+		"""Open the bin and read 'samples' of data starting at 'offset', hash it, and compare to the
+			hash stored in the metadata. Assumes data is contiguous. frameSize is
+			bytes per sample (2 or 3) * number of channels (1 or 2)
+		"""
+		f = open(self.fullpath, 'rb')
+		if f:
+			frameSize = (self.bitsPerSample // 8) * self.channels
+			f.seek(self.offset)
+			remaining = self.samples * frameSize
+			hash = 0
+			while remaining > 0:
+				toread = min(remaining, 1024*1024)
+				data = f.read(toread)
+				remaining -= toread
+				hash = crc(data, hash)
+			return hash
+		return 0
 
 def Read(songPath):
 	if not os.path.isdir(songPath):
@@ -181,10 +204,10 @@ def Read(songPath):
 	project = NSDictionary.dictionaryWithContentsOfFile_(projectFile)
 	return tracks, project
 
-
-def signatureForIndex(x):
+def SignatureForIndex(x):
 	signatures = { 0:(2,2), 1:(2, 4), 2:(3, 4), 3:(4, 4), 4:(5, 4), 5:(7, 4), 6:(6, 8), 7:(7, 8), 8:(9, 8), 9:(11, 8), 10:(12, 8) }
 	return signatures[x]
+
 
 def main(argv):
 	"""Print some data about the mtdaw song project and exit.
@@ -198,52 +221,39 @@ def main(argv):
 
 	songPath = os.path.normpath(os.path.join(os.getcwd(), argv[1]))
 	tracks, project = Read(songPath)
-	print ('\nPROJECT:')
+	print ('\n-------------------------------------------------------------------------------------------------------')
+	print ('PROJECT:', argv[1])
 	print ('   projectVersion: %d' % project['projectVersion'])
 	print ('   inputVolumeDB: %.1f' % project['inputVolumeDB'])
 	print ('   outputVolumeDB: %.1f' % project['outputVolumeDB'])
 	print ('   metronomeVolume: %.1f' % project['metronomeVolume'])
 	print ('   tempo: %.1f' % project['tempo'])
 	sigIndex = project.get('timeSignature2', project.get('timeSignature', 3))
-	(numerator, denominator) = signatureForIndex(sigIndex)
-	print ('   timeSignature: %d (%d/%d)' % (sigIndex, numerator, denominator))
+	numerator, denominator = SignatureForIndex(sigIndex)
+	print ('   timeSignature: [Index: %d] ["%d/%d"]' % (sigIndex, numerator, denominator))
 
-	print ('\nTRACKS: %d' % len(tracks))
-	for track in tracks:
-		print ('TRACK %d: %s' % (track.orderNum, track.friendlyName))
+	print ('\nTRACKS [count: %d]' % len(tracks))
+	for track in sorted(tracks, key=operator.attrgetter('orderNum')):
+		print ('TRACK [orderNum: %d] [name: "%s"]' % (track.orderNum, track.friendlyName))
 		print ('   [numChannels: %d] [muted: %s] [soloed: %s] [volumeDB: %.1f] [pan: %f] [send: %.4f] [trackHue: %f]' % (track.numChannels, track.muted, track.soloed, track.controlValues.volumeDB, track.controlValues.pan, track.controlValues.send, track.trackHue))
-		print ('   REGIONS: %d' % len(track.virtualTrack.regions))
+		print ('   REGIONS [count: %d]' % len(track.virtualTrack.regions))
 		for region in track.virtualTrack.regions:
-			print ('      [name: %s] [binID: %d] [realStart: %d] [realLength: %d] [binStart: %d] [fadeA: %d] [fadeB: %d]' % (region.name, region.binID, region.realStart, region.realLength, region.binStart, region.fadeA, region.fadeB))
-
-	
+			print ('      [binID: %d] [realStart: %d] [realLength: %d] [binStart: %d] [fadeA: %d] [fadeB: %d] [name: "%s"]' % (region.binID, region.realStart, region.realLength, region.binStart, region.fadeA, region.fadeB, region.name))
 
 	binPath = os.path.join(songPath, 'Bins')
 	binNames = os.listdir(binPath)
 
 	print ('\nBINS:')
 	for binName in binNames:
-		if str.lower(binName[-4:]) == '.wav':
-			hexstring = binName[:-4]
-			holder = BinHolder(hexstring)
+		holder = BinHolder(os.path.join(binPath, binName))
+		if holder != None:
 			holder.Print()
+			if holder.hash !=holder.CalculateHash():
+				print("Failed hash:", hex(hash))
+
 			
-			# Open the bin and read 'samples' of data starting at 'offset', hash it, and compare to the hash stored in the metadata.
-			# Assumes data is contiguous. frameSize is bytes per sample (2 or 3) * number of channels (1 or 2)
-			# Currently disabled because it's slow for large files, and read whole file into memory. So to fix this it should read
-			# a block at a time and use a python extension or hash using numpy?
-			if kDoHashChecks:
-				f = open(os.path.join(binPath, binName), 'rb')
-				if f:
-					frameSize = holder.bitsPerSample // 8 * holder.channels
-					f.seek(holder.offset)
-					data = f.read(holder.samples * frameSize)
-					crc = Crc64We()
-					crc.process(data)
-					hash = crc.final()
-					if hash != holder.hash:
-						print("Failed hash")
-			
+
+	print ('\n')
 
 if __name__ == '__main__':
 	main(sys.argv)
