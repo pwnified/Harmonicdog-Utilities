@@ -17,27 +17,30 @@ crc = crcmod.mkCrcFun(0x142F0E1EBA9EA3693, rev=False, initCrc=0x0, xorOut=0xFFFF
 
 
 def LinearInterp(p0, p1, t):
-	"""Interpolates linearly between p0 and p1. `t` is the scalar in the range [0:1]"""
+	"""Interpolates linearly between p0 and p1. `t` is the scalar [0,1]"""
 	return (1.0-t)*p0 + t*p1
 
 def ScalarToAmplitude(scalar):
-	"""Converts a linear scalar in the range [0:1] to decibels [-45:+12] and then to an amplitude scalar"""
+	"""Converts a linear scalar in the range [0,1] to decibels [-45,12] and then to an amplitude scalar"""
 	if scalar == 0.0:
 		return 0.0
 	theDB = LinearInterp(-45.0, 12.0, scalar)
 	theAmp = 10.0 ** (0.05 * theDB)
 	return theAmp
 
+def DBtoMM(db):
+	"""Converts a dB value [-45,12] to a scalar in millimeters in [0,1]. These are really tiny sliders :)"""
+	return (db - -45.0) / (12.0 - -45.0)
 
 
 class TrackControlPoint(NSObject):
 	"""Holds a volume, pan, and send scalar"""
 
 	def initWithCoder_(self, coder):
-		self.volume = coder.decodeIntForKey_('vol2') / 4096.0		# [0:1]
-		self.pan = coder.decodeIntForKey_('pan2') / 4096.0			# [-1:1]
-		self.send = coder.decodeIntForKey_('send2a') / 4096.0		# [0:1]
-		self.volumeDB = LinearInterp(-45.0, 12.0, self.volume)		# [-45:12]
+		self.volume = coder.decodeIntForKey_('vol2') / 4096.0		# [0,1]
+		self.pan = coder.decodeIntForKey_('pan2') / 4096.0			# [-1,1]
+		self.send = coder.decodeIntForKey_('send2a') / 4096.0		# [0,1]
+		self.volumeDB = LinearInterp(-45.0, 12.0, self.volume)		# [-45,12]
 		return self
 
 	def encodeWithCoder_(self, coder):
@@ -56,6 +59,10 @@ class VirtualRegion(NSObject):
 		self.realStart = coder.decodeIntForKey_('realStart') # absolute sample along timeline of where this region starts
 		self.realLength = coder.decodeIntForKey_('realLength') # length of region
 		self.binStart = coder.decodeIntForKey_('binStart') # offset in samples into Bin
+		if coder.containsValueForKey_('volume'):
+			self.volume = coder.decodeFloatForKey_('volume') # -45 to +12 scaled to [0,1]
+		else:
+			self.volume = DBtoMM(0)
 		if coder.containsValueForKey_('fadeA'):
 			self.fadeA = coder.decodeIntForKey_('fadeA') # offset relative to start, ie. realStart + fadeA
 			self.fadeB = coder.decodeIntForKey_('fadeB') # offset relative to end, ie. (realStart+realLength) - fadeB
@@ -70,9 +77,9 @@ class VirtualRegion(NSObject):
 		coder.encodeInt_forKey_(self.realStart, 'realStart')
 		coder.encodeInt_forKey_(self.realLength, 'realLength')
 		coder.encodeInt_forKey_(self.binStart, 'binStart')
+		coder.encodeFloat_forKey_(self.volume, 'volume')
 		coder.encodeInt_forKey_(self.fadeA, 'fadeA')
 		coder.encodeInt_forKey_(self.fadeB, 'fadeB')
-
 
 
 class VirtualTrack(NSObject):
@@ -175,19 +182,18 @@ class BinHolder:
 			hash stored in the metadata. Assumes data is contiguous. frameSize is
 			bytes per sample (2 or 3) * number of channels (1 or 2)
 		"""
+		hash = 0
 		f = open(self.fullpath, 'rb')
 		if f:
 			frameSize = (self.bitsPerSample // 8) * self.channels
 			f.seek(self.offset)
 			remaining = self.samples * frameSize
-			hash = 0
 			while remaining > 0:
 				toread = min(remaining, 1024*1024)
 				data = f.read(toread)
 				remaining -= toread
 				hash = crc(data, hash)
-			return hash
-		return 0
+		return hash
 
 def Read(songPath):
 	if not os.path.isdir(songPath):
@@ -226,7 +232,8 @@ def main(argv):
 	print ('   projectVersion: %d' % project['projectVersion'])
 	print ('   inputVolumeDB: %.1f' % project['inputVolumeDB'])
 	print ('   outputVolumeDB: %.1f' % project['outputVolumeDB'])
-	print ('   metronomeVolume: %.1f' % project['metronomeVolume'])
+	if project.objectForKey_('metronomeVolume'):
+		print ('   metronomeVolume: %.1f' % project['metronomeVolume'])
 	print ('   tempo: %.1f' % project['tempo'])
 	sigIndex = project.get('timeSignature2', project.get('timeSignature', 3))
 	numerator, denominator = SignatureForIndex(sigIndex)
@@ -238,7 +245,7 @@ def main(argv):
 		print ('   [numChannels: %d] [muted: %s] [soloed: %s] [volumeDB: %.1f] [pan: %f] [send: %.4f] [trackHue: %f]' % (track.numChannels, track.muted, track.soloed, track.controlValues.volumeDB, track.controlValues.pan, track.controlValues.send, track.trackHue))
 		print ('   REGIONS [count: %d]' % len(track.virtualTrack.regions))
 		for region in track.virtualTrack.regions:
-			print ('      [binID: %d] [realStart: %d] [realLength: %d] [binStart: %d] [fadeA: %d] [fadeB: %d] [name: "%s"]' % (region.binID, region.realStart, region.realLength, region.binStart, region.fadeA, region.fadeB, region.name))
+			print ('      [binID: %d] [realStart: %d] [realLength: %d] [binStart: %d] [fadeA: %d] [fadeB: %d] [volume: %f] [name: "%s"]' % (region.binID, region.realStart, region.realLength, region.binStart, region.fadeA, region.fadeB, region.volume, region.name))
 
 	binPath = os.path.join(songPath, 'Bins')
 	binNames = os.listdir(binPath)
@@ -248,8 +255,9 @@ def main(argv):
 		holder = BinHolder(os.path.join(binPath, binName))
 		if holder != None:
 			holder.Print()
-			if holder.hash !=holder.CalculateHash():
-				print("Failed hash:", hex(hash))
+			h = holder.CalculateHash()
+			if h != holder.hash:
+				print("Failed hash:", hex(h))
 
 			
 
