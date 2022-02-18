@@ -69,6 +69,10 @@ class VirtualRegion(NSObject):
 		else:
 			self.fadeA = 128
 			self.fadeB = 128
+		if coder.containsValueForKey_('muted'):
+			self.muted = coder.decodeBoolForKey_('muted')
+		else:
+			self.muted = NO
 		return self
 
 	def encodeWithCoder_(self, coder):
@@ -80,7 +84,7 @@ class VirtualRegion(NSObject):
 		coder.encodeFloat_forKey_(self.volume, 'volume')
 		coder.encodeInt_forKey_(self.fadeA, 'fadeA')
 		coder.encodeInt_forKey_(self.fadeB, 'fadeB')
-
+		coder.encodeBool_forKey_(self.muted, 'muted')
 
 class VirtualTrack(NSObject):
 	"""Holds a list of VirtualRegions"""
@@ -245,7 +249,7 @@ def main(argv):
 		print ('   [numChannels: %d] [muted: %s] [soloed: %s] [volumeDB: %.1f] [pan: %f] [send: %.4f] [trackHue: %f]' % (track.numChannels, track.muted, track.soloed, track.controlValues.volumeDB, track.controlValues.pan, track.controlValues.send, track.trackHue))
 		print ('   REGIONS [count: %d]' % len(track.virtualTrack.regions))
 		for region in track.virtualTrack.regions:
-			print ('      [binID: %d] [realStart: %d] [realLength: %d] [binStart: %d] [fadeA: %d] [fadeB: %d] [volume: %f] [name: "%s"]' % (region.binID, region.realStart, region.realLength, region.binStart, region.fadeA, region.fadeB, region.volume, region.name))
+			print ('      [binID: %d] [realStart: %d] [realLength: %d] [binStart: %d] [fadeA: %d] [fadeB: %d] [volume: %f] [muted: %d] [name: "%s"]' % (region.binID, region.realStart, region.realLength, region.binStart, region.fadeA, region.fadeB, region.volume, region.muted, region.name))
 
 	binPath = os.path.join(songPath, 'Bins')
 	binNames = os.listdir(binPath)
