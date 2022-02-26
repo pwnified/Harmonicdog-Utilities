@@ -39,15 +39,16 @@ class TrackControlPoint(NSObject):
 	def initWithCoder_(self, coder):
 		self.volume = coder.decodeIntForKey_('vol2') / 4096.0		# [0,1]
 		self.pan = coder.decodeIntForKey_('pan2') / 4096.0			# [-1,1]
-		self.send = coder.decodeIntForKey_('send2a') / 4096.0		# [0,1]
+		self.sendA = coder.decodeIntForKey_('send2a') / 4096.0		# [0,1]
+		self.sendB = coder.decodeIntForKey_('send2b') / 4096.0
 		self.volumeDB = LinearInterp(-45.0, 12.0, self.volume)		# [-45,12]
 		return self
 
 	def encodeWithCoder_(self, coder):
 		coder.encodeInt_forKey_(self.volume * 4096.0, 'vol2')
 		coder.encodeInt_forKey_(self.pan * 4096.0, 'pan2')
-		coder.encodeInt_forKey_(self.send * 4096.0, 'send2a')
-
+		coder.encodeInt_forKey_(self.sendA * 4096.0, 'send2a')
+		coder.encodeInt_forKey_(self.sendB * 4096.0, 'send2b')
 
 
 class VirtualRegion(NSObject):
@@ -201,17 +202,19 @@ class BinHolder:
 
 def Read(songPath):
 	if not os.path.isdir(songPath):
-		raise ValueError('Bad input mtdaw project: %s' % songPath)
+		raise ValueError('Bad mtdaw project: %s' % songPath)
+	projectFile = os.path.join(songPath, 'project.plist')
+	if not os.path.isfile(projectFile):
+		raise ValueError('Missing project.plist file: %s' % songPath)
+	project = NSDictionary.dictionaryWithContentsOfFile_(projectFile)
+	if project['projectVersion'] < 15:
+		raise ValueError('Need at least MultiTrack 2.0')
 	tracksFile = os.path.join(songPath, 'Tracks2.plist')
 	if not os.path.isfile(tracksFile):
 		tracksFile = os.path.join(songPath, 'Tracks.plist')
 	if not os.path.isfile(tracksFile):
-		raise ValueError('Not a song project: %s' % songPath)
-	projectFile = os.path.join(songPath, 'project.plist')
-	if not os.path.isfile(projectFile):
-		raise ValueError('Missing project.plist file: %s' % songPath)
+		raise ValueError('Missing Tracks2.plist file: %s' % songPath)
 	tracks = NSKeyedUnarchiver.unarchiveObjectWithFile_(tracksFile)
-	project = NSDictionary.dictionaryWithContentsOfFile_(projectFile)
 	return tracks, project
 
 def SignatureForIndex(x):
@@ -230,7 +233,11 @@ def main(argv):
 		exit('Usage: %s song.mtdaw' % argv[0])
 
 	songPath = os.path.normpath(os.path.join(os.getcwd(), argv[1]))
-	tracks, project = Read(songPath)
+	try:
+		tracks, project = Read(songPath)
+	except (Exception) as e:
+		exit ("{0}".format(e.args))
+
 	print ('\n-------------------------------------------------------------------------------------------------------')
 	print ('PROJECT:', argv[1])
 	print ('   projectVersion: %d' % project['projectVersion'])
@@ -246,7 +253,7 @@ def main(argv):
 	print ('\nTRACKS [count: %d]' % len(tracks))
 	for track in sorted(tracks, key=operator.attrgetter('orderNum')):
 		print ('TRACK [orderNum: %d] [name: "%s"]' % (track.orderNum, track.friendlyName))
-		print ('   [numChannels: %d] [muted: %s] [soloed: %s] [volumeDB: %.1f] [pan: %f] [send: %.4f] [trackHue: %f]' % (track.numChannels, track.muted, track.soloed, track.controlValues.volumeDB, track.controlValues.pan, track.controlValues.send, track.trackHue))
+		print ('   [numChannels: %d] [muted: %s] [soloed: %s] [volumeDB: %.1f] [pan: %f] [sendA: %.2f] [sendB: %.2f] [trackHue: %f]' % (track.numChannels, track.muted, track.soloed, track.controlValues.volumeDB, track.controlValues.pan, track.controlValues.sendA, track.controlValues.sendB, track.trackHue))
 		print ('   REGIONS [count: %d]' % len(track.virtualTrack.regions))
 		for region in track.virtualTrack.regions:
 			print ('      [binID: %d] [realStart: %d] [realLength: %d] [binStart: %d] [fadeA: %d] [fadeB: %d] [volume: %f] [muted: %d] [name: "%s"]' % (region.binID, region.realStart, region.realLength, region.binStart, region.fadeA, region.fadeB, region.volume, region.muted, region.name))
