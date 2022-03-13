@@ -60,20 +60,17 @@ class VirtualRegion(NSObject):
 		self.realStart = coder.decodeIntForKey_('realStart') # absolute sample along timeline of where this region starts
 		self.realLength = coder.decodeIntForKey_('realLength') # length of region
 		self.binStart = coder.decodeIntForKey_('binStart') # offset in samples into Bin
+		self.volume = DBtoMM(0)
 		if coder.containsValueForKey_('volume'):
 			self.volume = coder.decodeFloatForKey_('volume') # -45 to +12 scaled to [0,1]
-		else:
-			self.volume = DBtoMM(0)
+		self.fadeA = 128
+		self.fadeB = 128
 		if coder.containsValueForKey_('fadeA'):
 			self.fadeA = coder.decodeIntForKey_('fadeA') # offset relative to start, ie. realStart + fadeA
 			self.fadeB = coder.decodeIntForKey_('fadeB') # offset relative to end, ie. (realStart+realLength) - fadeB
-		else:
-			self.fadeA = 128
-			self.fadeB = 128
+		self.muted = NO
 		if coder.containsValueForKey_('muted'):
 			self.muted = coder.decodeBoolForKey_('muted')
-		else:
-			self.muted = NO
 		return self
 
 	def encodeWithCoder_(self, coder):
@@ -112,7 +109,13 @@ class CacheTrack(NSObject):
 		self.muted = coder.decodeBoolForKey_('muted')
 		self.soloed = coder.decodeBoolForKey_('soloed')
 		self.controlValues = coder.decodeObjectForKey_('controlValues')
-		self.trackHue = coder.decodeFloatForKey_('trackHue')
+		self.trackHue = coder.decodeDoubleForKey_('trackHue')
+		self.trackSat = 0.35;
+		if coder.containsValueForKey_('trackSat'):
+			self.trackSat = coder.decodeDoubleForKey_('trackSat')
+		self.trackBrt = 0.8;
+		if coder.containsValueForKey_('trackBrt'):
+			self.trackBrt = coder.decodeDoubleForKey_('trackBrt');
 		return self
 	
 	def encodeWithCoder_(self, coder):
@@ -124,7 +127,9 @@ class CacheTrack(NSObject):
 		coder.encodeBool_forKey(self.muted, 'muted')
 		coder.encodeBool_forKey(self.soloed, 'soloed')
 		coder.encodeObject_forKey_(self.controlValues, 'controlValues')
-		coder.encodeFloat_forKey_(self.trackHue, 'trackHue')
+		coder.encodeDouble_forKey_(self.trackHue, 'trackHue')
+		coder.encodeDouble_forKey_(self.trackSat, 'trackSat')
+		coder.encodeDouble_forKey_(self.trackBrt, 'trackBrt')
 
 class BinHolder:
 	"""Metadata for a wav is encoded into the filename of the wav file. This class
@@ -253,7 +258,7 @@ def main(argv):
 	print ('\nTRACKS [count: %d]' % len(tracks))
 	for track in sorted(tracks, key=operator.attrgetter('orderNum')):
 		print ('TRACK [orderNum: %d] [name: "%s"]' % (track.orderNum, track.friendlyName))
-		print ('   [numChannels: %d] [muted: %s] [soloed: %s] [volumeDB: %.1f] [pan: %f] [sendA: %.2f] [sendB: %.2f] [trackHue: %f]' % (track.numChannels, track.muted, track.soloed, track.controlValues.volumeDB, track.controlValues.pan, track.controlValues.sendA, track.controlValues.sendB, track.trackHue))
+		print ('   [numChannels: %d] [muted: %s] [soloed: %s] [volumeDB: %.1f] [pan: %f] [sendA: %.2f] [sendB: %.2f] [trackHSB: %.3f, %.3f, %.3f]' % (track.numChannels, track.muted, track.soloed, track.controlValues.volumeDB, track.controlValues.pan, track.controlValues.sendA, track.controlValues.sendB, track.trackHue, track.trackSat, track.trackBrt))
 		print ('   REGIONS [count: %d]' % len(track.virtualTrack.regions))
 		for region in track.virtualTrack.regions:
 			print ('      [binID: %d] [realStart: %d] [realLength: %d] [binStart: %d] [fadeA: %d] [fadeB: %d] [volume: %f] [muted: %d] [name: "%s"]' % (region.binID, region.realStart, region.realLength, region.binStart, region.fadeA, region.fadeB, region.volume, region.muted, region.name))
