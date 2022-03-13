@@ -7,6 +7,9 @@
 #
 
 import sys, os, binascii, struct, string, fileinput, operator
+from Utilities import *
+import CompSwapper, EQSwapper
+
 
 #pip install pyobjc
 from Foundation import *
@@ -16,39 +19,23 @@ import crcmod
 crc = crcmod.mkCrcFun(0x142F0E1EBA9EA3693, rev=False, initCrc=0x0, xorOut=0xFFFFFFFFFFFFFFFF)
 
 
-def LinearInterp(p0, p1, t):
-	"""Interpolates linearly between p0 and p1. `t` is the scalar [0,1]"""
-	return (1.0-t)*p0 + t*p1
-
-def ScalarToAmplitude(scalar):
-	"""Converts a linear scalar in the range [0,1] to decibels [-45,12] and then to an amplitude scalar"""
-	if scalar == 0.0:
-		return 0.0
-	theDB = LinearInterp(-45.0, 12.0, scalar)
-	theAmp = 10.0 ** (0.05 * theDB)
-	return theAmp
-
-def DBtoMM(db):
-	"""Converts a dB value [-45,12] to a scalar in millimeters in [0,1]. These are really tiny sliders :)"""
-	return (db - -45.0) / (12.0 - -45.0)
-
 
 class TrackControlPoint(NSObject):
 	"""Holds a volume, pan, and send scalar"""
 
 	def initWithCoder_(self, coder):
-		self.volume = coder.decodeIntForKey_('vol2') / 4096.0		# [0,1]
-		self.pan = coder.decodeIntForKey_('pan2') / 4096.0			# [-1,1]
-		self.sendA = coder.decodeIntForKey_('send2a') / 4096.0		# [0,1]
-		self.sendB = coder.decodeIntForKey_('send2b') / 4096.0
-		self.volumeDB = LinearInterp(-45.0, 12.0, self.volume)		# [-45,12]
+		self.volume = IntVolToFloat(coder.decodeIntForKey_('vol2'))		# [0,1]
+		self.pan = IntVolToFloat(coder.decodeIntForKey_('pan2'))			# [-1,1]
+		self.sendA = IntVolToFloat(coder.decodeIntForKey_('send2a'))	# [0,1]
+		self.sendB = IntVolToFloat(coder.decodeIntForKey_('send2b'))	# [0,1]
+		self.volumeDB = MMtoDB(self.volume)
 		return self
 
 	def encodeWithCoder_(self, coder):
-		coder.encodeInt_forKey_(self.volume * 4096.0, 'vol2')
-		coder.encodeInt_forKey_(self.pan * 4096.0, 'pan2')
-		coder.encodeInt_forKey_(self.sendA * 4096.0, 'send2a')
-		coder.encodeInt_forKey_(self.sendB * 4096.0, 'send2b')
+		coder.encodeInt_forKey_(FloatToIntVol(self.volume), 'vol2')
+		coder.encodeInt_forKey_(FloatToIntVol(self.pan), 'pan2')
+		coder.encodeInt_forKey_(FloatToIntVol(self.sendA), 'send2a')
+		coder.encodeInt_forKey_(FloatToIntVol(self.sendB), 'send2b')
 
 
 class VirtualRegion(NSObject):
@@ -104,7 +91,6 @@ class CacheTrack(NSObject):
 		self.friendlyName = coder.decodeObjectForKey_('friendlyName')
 		self.trackNum = coder.decodeIntForKey_('trackNum')
 		self.orderNum = coder.decodeIntForKey_('orderNum')
-		self.numChannels = coder.decodeIntForKey_('numChannels')
 		self.virtualTrack = coder.decodeObjectForKey_('virtualTrack')
 		self.muted = coder.decodeBoolForKey_('muted')
 		self.soloed = coder.decodeBoolForKey_('soloed')
@@ -116,13 +102,18 @@ class CacheTrack(NSObject):
 		self.trackBrt = 0.8;
 		if coder.containsValueForKey_('trackBrt'):
 			self.trackBrt = coder.decodeDoubleForKey_('trackBrt');
+		self.compressor = coder.decodeObjectForKey_('compressorSet')
+		if coder.containsValueForKey_('effectsCompOn'): # old way
+			self.compressor._power = coder.decodeBoolForKey_('effectsCompOn')
+		self.parametricEq = coder.decodeObjectForKey_('parametricSet')
+		if coder.containsValueForKey_('effectsEQon'):
+			self.parametricEq._power = coder.decodeBoolForKey_('effectsEQon')
 		return self
 	
 	def encodeWithCoder_(self, coder):
 		coder.encodeObject_forKey_(self.friendlyName, 'friendlyName')
 		coder.encodeInt_forKey_(self.trackNum, 'trackNum')
 		coder.encodeInt_forKey_(self.orderNum, 'orderNum')
-		coder.encodeInt_forKey_(self.numChannels, 'numChannels')
 		coder.encodeObject_forKey_(self.virtualTrack, 'virtualTrack')
 		coder.encodeBool_forKey(self.muted, 'muted')
 		coder.encodeBool_forKey(self.soloed, 'soloed')
@@ -130,6 +121,8 @@ class CacheTrack(NSObject):
 		coder.encodeDouble_forKey_(self.trackHue, 'trackHue')
 		coder.encodeDouble_forKey_(self.trackSat, 'trackSat')
 		coder.encodeDouble_forKey_(self.trackBrt, 'trackBrt')
+		coder.encodeObject_forKey_(self.compressor, 'compressorSet')
+		coder.encodeObject_forKey_(self.parametricEq, 'parametricSet')
 
 class BinHolder:
 	"""Metadata for a wav is encoded into the filename of the wav file. This class
@@ -175,13 +168,13 @@ class BinHolder:
 		self.channels = int(channels)
 		self.samples = int(samples)
 		self.bitsPerSample = int(bytesPerChannel) * 8
-		self.sampleRate = self.BitrateFormatToSamplerate(bitrateFormat)
+		self.samplerate = self.BitrateFormatToSamplerate(bitrateFormat)
 		self.hash = int(hash)
 		self.offset = int(offset)
 		self.name = name
 			
 	def Print(self):
-		print ('   [binID %d] [channels: %d] [samples: %d] [bps: %d] [rate: %d] [offset: %d] [hash: 0x%016x] [name: %s]' % (self.binID, self.channels, self.samples, self.bitsPerSample, self.sampleRate, self.offset, self.hash, self.name))
+		print ('   [binID %d] [channels: %d] [samples: %d] [bps: %d] [rate: %d] [offset: %d] [hash: 0x%016x] [name: %s]' % (self.binID, self.channels, self.samples, self.bitsPerSample, self.samplerate, self.offset, self.hash, self.name))
 
 	def BitrateFormatToSamplerate(self, bitrateFormat):
 		bitrates = { 0: 0, 1: 11025, 2: 12000, 3: 22050, 4: 24000, 5: 44100, 6: 48000, 7: 88200, 8: 96000 }
@@ -230,7 +223,6 @@ def SignatureForIndex(x):
 def main(argv):
 	"""Print some data about the mtdaw song project and exit.
 		Call this script with a single argument, the path to the mtdaw project.
-		Should be a relative path from the current directory.
 		e.g
 		mtdawRead.py ../Songs/BbMin7.mtdaw
 	"""
@@ -246,19 +238,31 @@ def main(argv):
 	print ('\n-------------------------------------------------------------------------------------------------------')
 	print ('PROJECT:', argv[1])
 	print ('   projectVersion: %d' % project['projectVersion'])
+	samplerate = 44100
+	if project.objectForKey_('sampleRate'):
+		samplerate = project['sampleRate']
+	print ('   samplerate:', samplerate)
+	bitsPerSample = 16
+	if project.objectForKey_('bitDepth'):
+		bitsPerSample = project['bitDepth']
+	print ('   bitsPerSample:', bitsPerSample)
 	print ('   inputVolumeDB: %.1f' % project['inputVolumeDB'])
 	print ('   outputVolumeDB: %.1f' % project['outputVolumeDB'])
 	if project.objectForKey_('metronomeVolume'):
 		print ('   metronomeVolume: %.1f' % project['metronomeVolume'])
-	print ('   tempo: %.1f' % project['tempo'])
 	sigIndex = project.get('timeSignature2', project.get('timeSignature', 3))
 	numerator, denominator = SignatureForIndex(sigIndex)
-	print ('   timeSignature: [Index: %d] ["%d/%d"]' % (sigIndex, numerator, denominator))
+	print ('   timeSignature: %d/%d' % (numerator, denominator))
+	print ('   tempo: %.1f' % project['tempo'])
+
 
 	print ('\nTRACKS [count: %d]' % len(tracks))
 	for track in sorted(tracks, key=operator.attrgetter('orderNum')):
-		print ('TRACK [orderNum: %d] [name: "%s"]' % (track.orderNum, track.friendlyName))
-		print ('   [numChannels: %d] [muted: %s] [soloed: %s] [volumeDB: %.1f] [pan: %f] [sendA: %.2f] [sendB: %.2f] [trackHSB: %.3f, %.3f, %.3f]' % (track.numChannels, track.muted, track.soloed, track.controlValues.volumeDB, track.controlValues.pan, track.controlValues.sendA, track.controlValues.sendB, track.trackHue, track.trackSat, track.trackBrt))
+		print ('TRACK [name: "%s"] [orderNum: %d]' % (track.friendlyName, track.orderNum))
+		print ('   [volumeDB: %.1f] [pan: %f] [muted: %s] [soloed: %s] [sendA: %.2f] [sendB: %.2f]' % (track.controlValues.volumeDB, track.controlValues.pan, track.muted, track.soloed, track.controlValues.sendA, track.controlValues.sendB))
+		print ('   [trackHSB: %.3f, %.3f, %.3f]' % (track.trackHue, track.trackSat, track.trackBrt))
+		print ('   [comp: %s]' % track.compressor.description(samplerate))
+		print ('   [eq: %s]' % track.parametricEq.description(samplerate))
 		print ('   REGIONS [count: %d]' % len(track.virtualTrack.regions))
 		for region in track.virtualTrack.regions:
 			print ('      [binID: %d] [realStart: %d] [realLength: %d] [binStart: %d] [fadeA: %d] [fadeB: %d] [volume: %f] [muted: %d] [name: "%s"]' % (region.binID, region.realStart, region.realLength, region.binStart, region.fadeA, region.fadeB, region.volume, region.muted, region.name))
